@@ -27,7 +27,7 @@ guardia-api/guardia-api/       API Java / Spring Boot
   CONFIGURACAO_LOCAL.md        Perfis e variáveis locais
   sql/                        Proposta de instalação limpa e scripts aditivos
 POLITICA_SENHA_GUARDIA.md      Regra de cadastro e troca de senha
-TESTES_E_LIMITACOES.md         Evidências, pendências e limitações
+VALIDACAO_DO_PROJETO.md       Resultados e condições de demonstração
 ```
 
 ## Tecnologias e requisitos
@@ -111,7 +111,7 @@ Com emulador disponível, os testes de cartão/endereço podem ser executados se
 .\gradlew.bat :app:connectedDebugAndroidTest '-Pandroid.testInstrumentationRunnerArguments.class=br.com.guardia.EnderecoAlertaInstrumentadoTest,br.com.guardia.AlertaRecebidoInstrumentadoTest' --console=plain
 ```
 
-A configuração existente mantém APKs após os testes, importante para não confundir desinstalação com falha de persistência de sessão. Não use limpeza de dados durante um teste de restauração de sessão. Com dependências já baixadas, os comandos aceitam modo offline. Consulte [evidências e limitações](TESTES_E_LIMITACOES.md) para os resultados realmente executados.
+A configuração existente mantém APKs após os testes, importante para não confundir desinstalação com falha de persistência de sessão. Não use limpeza de dados durante um teste de restauração de sessão. Com dependências já baixadas, os comandos aceitam modo offline. Consulte [validação do projeto](VALIDACAO_DO_PROJETO.md) para os resultados realmente executados.
 
 ## Demonstração manual
 
