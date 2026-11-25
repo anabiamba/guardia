@@ -1,0 +1,40 @@
+# Proteção se esta pasta for usada como raiz de um repositório conjunto.
+.idea/
+firebase-credentials/
+**/firebase-credentials/
+guardia-api/oracleJdk-26/
+guardia-api/.github/modernize/
+*.zip
+*.log
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+**/firebase-admin*.json
+**/*firebase-adminsdk*.json
+**/*service-account*.json
+**/*serviceAccount*.json
+**/google-services.json
+**/local.properties
+**/application-teste.properties
+**/application-local.properties
+**/application-*.local.properties
+**/secrets.properties
+**/.gradle/
+**/.kotlin/
+**/.idea/
+**/build/
+**/target/
+# Acompanhamento de trabalho local: preparar documentação pública sanitizada à parte.
+/PROGRESSO_GUARDIA.md
+/PROGRESSO_GUARDIA.txt
+
+# Instruções e diagnósticos de trabalho locais; documentação pública no README.
+/AGENTS.md
+/CONTEXTO_GUARDIA.md
+/ESTADO_ATUAL_GUARDIA.md
