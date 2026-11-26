@@ -446,6 +446,248 @@ class SosMysqlIT {
         assertThrows(ResponseStatusException.class, () -> servico.registrarAjudaComoProxima(id, ajudante));
     }
 
+    // Credenciais exclusivamente fictícias, criadas e usadas somente nesta suíte opt-in.
+    private static final String SENHA_ANTERIOR_TESTE = "Anterior-ficticia-26!";
+    private static final String SENHA_NOVA_TESTE = "Nova-ficticia-27!";
+
+    @Test
+    void trocaSenhaRevogaMultiplasSessoesEPreservaOutraConta() {
+        Long conta = contaComSenhaConhecida();
+        Long outra = contaComSenhaConhecida();
+        var primeira = loginComFcm(conta);
+        var segunda = loginComFcm(conta);
+        var alheia = loginComFcm(outra);
+        alterarSenha(primeira);
+        confirmarSenhaNovaESessoesRevogadas(conta, List.of(primeira, segunda));
+        confirmarSessaoEFcmAtivos(alheia);
+        assertTrue(contexto.getBean(LoginSessaoService.class).login(
+                usuarios.findById(conta).orElseThrow().getEmail(), SENHA_ANTERIOR_TESTE,
+                UUID.randomUUID(), null).isEmpty());
+        var novoLogin = contexto.getBean(LoginSessaoService.class).login(
+                usuarios.findById(conta).orElseThrow().getEmail(), SENHA_NOVA_TESTE,
+                UUID.randomUUID(), null).orElseThrow();
+        credenciaisCriadas.add(novoLogin.credencial());
+        assertTrue(contexto.getBean(SessaoService.class).autenticar(novoLogin.credencial().token()).isPresent());
+    }
+
+    @Test
+    void senhaAtualIncorretaOuNovaFracaNaoMudaSessoesEVinculosPersistidos() {
+        Long conta = contaComSenhaConhecida();
+        var primeira = loginComFcm(conta);
+        var segunda = loginComFcm(conta);
+        String hashAntes = usuarios.findById(conta).orElseThrow().getSenha();
+        var trocas = contexto.getBean(AlterarSenhaService.class);
+        var identidade = contexto.getBean(SessaoService.class).autenticar(primeira.token()).orElseThrow();
+        for (var pedido : List.of(
+                new br.com.guardia.dto.AlterarSenhaRequest("Senha-incorreta-28!", SENHA_NOVA_TESTE),
+                new br.com.guardia.dto.AlterarSenhaRequest(SENHA_ANTERIOR_TESTE, "12345678"))) {
+            var erro = assertThrows(ResponseStatusException.class, () -> trocas.alterar(identidade, pedido));
+            assertEquals(400, erro.getStatusCode().value());
+            assertTrue(hashAntes.equals(usuarios.findById(conta).orElseThrow().getSenha()),
+                    "Pedido inválido não deve mudar o hash persistido.");
+            confirmarSessaoEFcmAtivos(primeira);
+            confirmarSessaoEFcmAtivos(segunda);
+        }
+    }
+
+    @Test
+    void rollbackExternoDaTrocaRestauraSenhaSessoesEVinculos() {
+        Long conta = contaComSenhaConhecida();
+        var primeira = loginComFcm(conta);
+        var segunda = loginComFcm(conta);
+        String hashAntes = usuarios.findById(conta).orElseThrow().getSenha();
+        var transacao = new TransactionTemplate(contexto.getBean(JpaTransactionManager.class));
+        assertThrows(FalhaTransacaoTeste.class, () -> transacao.executeWithoutResult(status -> {
+            alterarSenha(primeira);
+            // Falha controlada depois dos flushes e da limpeza FCM, ainda na mesma transação.
+            throw new FalhaTransacaoTeste();
+        }));
+        assertTrue(hashAntes.equals(usuarios.findById(conta).orElseThrow().getSenha()),
+                "Rollback deve restaurar o hash persistido.");
+        confirmarSessaoEFcmAtivos(primeira);
+        confirmarSessaoEFcmAtivos(segunda);
+    }
+
+    @Test
+    void loginAntigoAntesDaTrocaTemSessaoRevogadaAposCommit() throws Exception {
+        Long conta = contaComSenhaConhecida();
+        var inicial = loginComFcm(conta);
+        var emitida = new java.util.concurrent.atomic.AtomicReference<SessaoService.Credencial>();
+        operacoesOrdenadasComBloqueio(conta,
+                () -> { emitida.set(loginComFcm(conta)); return true; },
+                () -> { alterarSenha(inicial); return true; });
+        confirmarSenhaNovaESessoesRevogadas(conta, List.of(inicial, emitida.get()));
+    }
+
+    @Test
+    void trocaAntesDeLoginAntigoImpedeNovaSessaoAposCommit() throws Exception {
+        Long conta = contaComSenhaConhecida();
+        var inicial = loginComFcm(conta);
+        var loginAceito = new java.util.concurrent.atomic.AtomicBoolean(true);
+        String email = usuarios.findById(conta).orElseThrow().getEmail();
+        operacoesOrdenadasComBloqueio(conta,
+                () -> { alterarSenha(inicial); return true; },
+                () -> {
+                    var resultado = contexto.getBean(LoginSessaoService.class).login(
+                            email, SENHA_ANTERIOR_TESTE, UUID.randomUUID(), null);
+                    resultado.ifPresent(r -> credenciaisCriadas.add(r.credencial()));
+                    loginAceito.set(resultado.isPresent());
+                    return true;
+                });
+        assertFalse(loginAceito.get(), "Senha antiga não deve emitir sessão depois da troca.");
+        confirmarSenhaNovaESessoesRevogadas(conta, List.of(inicial));
+    }
+
+    @Test
+    void localizacaoAntesDaTrocaNaoPerdePosicaoNemRevogacao() throws Exception {
+        verificarTrocaComLocalizacao(true);
+    }
+
+    @Test
+    void localizacaoDepoisDaTrocaNaoRestauraSenhaOuSessoes() throws Exception {
+        verificarTrocaComLocalizacao(false);
+    }
+
+    private void verificarTrocaComLocalizacao(boolean localizacaoPrimeiro) throws Exception {
+        Long conta = contaComSenhaConhecida();
+        var primeira = loginComFcm(conta);
+        var segunda = loginComFcm(conta);
+        Callable<Boolean> atualizar = () -> {
+            contexto.getBean(UsuarioService.class).atualizarLocalizacao(conta, 1.0, 2.0);
+            return true;
+        };
+        Callable<Boolean> trocar = () -> { alterarSenha(primeira); return true; };
+        operacoesOrdenadasComBloqueio(conta, localizacaoPrimeiro ? atualizar : trocar,
+                localizacaoPrimeiro ? trocar : atualizar);
+        var persistida = usuarios.findById(conta).orElseThrow();
+        assertEquals(1.0, persistida.getLatitude());
+        assertEquals(2.0, persistida.getLongitude());
+        assertEquals(contexto.getBean(RelogioTeste.class).instant(), persistida.getLocalizacaoAtualizadaEm());
+        confirmarSenhaNovaESessoesRevogadas(conta, List.of(primeira, segunda));
+        // Testa consistência do serviço; não simula autorização HTTP de requisição já revogada.
+    }
+
+    private Long contaComSenhaConhecida() {
+        Long id = criarConta();
+        var conta = usuarios.findById(id).orElseThrow();
+        conta.setSenha(contexto.getBean(org.springframework.security.crypto.password.PasswordEncoder.class)
+                .encode(SENHA_ANTERIOR_TESTE));
+        usuarios.saveAndFlush(conta);
+        return id;
+    }
+
+    private SessaoService.Credencial loginComFcm(Long conta) {
+        var resultado = contexto.getBean(LoginSessaoService.class).login(
+                usuarios.findById(conta).orElseThrow().getEmail(), SENHA_ANTERIOR_TESTE,
+                UUID.randomUUID(), UUID.randomUUID().toString().replace("-", "") + "12345678901").orElseThrow();
+        var credencial = resultado.credencial();
+        credenciaisCriadas.add(credencial);
+        var sessoes = contexto.getBean(SessaoService.class);
+        sessoes.atualizarTokenFcm(sessoes.autenticar(credencial.token()).orElseThrow(),
+                "fcm-ficticio-" + UUID.randomUUID());
+        // Também cobre limpeza do campo legado da sessão, sem usar token real.
+        var repositorio = contexto.getBean(SessaoRepository.class);
+        var sessao = repositorio.findById(sessoes.autenticar(credencial.token()).orElseThrow().tokenHash()).orElseThrow();
+        sessao.atualizarTokenFcm("fcm-legado-ficticio-" + UUID.randomUUID());
+        repositorio.saveAndFlush(sessao);
+        return credencial;
+    }
+
+    private void alterarSenha(SessaoService.Credencial credencial) {
+        var identidade = contexto.getBean(SessaoService.class).autenticar(credencial.token()).orElseThrow();
+        contexto.getBean(AlterarSenhaService.class).alterar(identidade,
+                new br.com.guardia.dto.AlterarSenhaRequest(SENHA_ANTERIOR_TESTE, SENHA_NOVA_TESTE));
+    }
+
+    private void confirmarSessaoEFcmAtivos(SessaoService.Credencial credencial) {
+        var sessoes = contexto.getBean(SessaoService.class);
+        var identidade = sessoes.autenticar(credencial.token()).orElseThrow();
+        assertTrue(contexto.getBean(VinculoFcmRepository.class)
+                .buscarTokensAtivos(identidade.usuarioId(), contexto.getBean(RelogioTeste.class).instant())
+                .stream().anyMatch(token -> token.startsWith("fcm-ficticio-")));
+        verificarCamposPersistidos(credencial, true);
+    }
+
+    private void confirmarSenhaNovaESessoesRevogadas(Long conta, List<SessaoService.Credencial> credenciais) {
+        var encoder = contexto.getBean(org.springframework.security.crypto.password.PasswordEncoder.class);
+        var hash = usuarios.findById(conta).orElseThrow().getSenha();
+        assertTrue(encoder.matches(SENHA_NOVA_TESTE, hash));
+        assertFalse(encoder.matches(SENHA_ANTERIOR_TESTE, hash));
+        for (var credencial : credenciais) {
+            assertTrue(contexto.getBean(SessaoService.class).autenticar(credencial.token()).isEmpty());
+            verificarCamposPersistidos(credencial, false);
+        }
+    }
+
+    private void verificarCamposPersistidos(SessaoService.Credencial credencial, boolean ativa) {
+        String hash;
+        try {
+            hash = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(credencial.token().getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+        final String hashSessao = hash;
+        var transacao = new TransactionTemplate(contexto.getBean(JpaTransactionManager.class));
+        transacao.executeWithoutResult(status -> {
+            var em = org.springframework.orm.jpa.EntityManagerFactoryUtils.getTransactionalEntityManager(
+                    contexto.getBean(EntityManagerFactory.class));
+            Number sessoes = (Number) em.createNativeQuery("SELECT COUNT(*) FROM sessoes WHERE token_hash = :hash "
+                    + (ativa ? "AND revogada_em IS NULL AND token_fcm IS NOT NULL" : "AND revogada_em IS NOT NULL AND token_fcm IS NULL"))
+                    .setParameter("hash", hashSessao).getSingleResult();
+            Number vinculos = (Number) em.createNativeQuery("SELECT COUNT(*) FROM vinculos_fcm WHERE sessao_hash = :hash "
+                    + (ativa ? "AND token IS NOT NULL AND token_hash IS NOT NULL" : "AND token IS NULL AND token_hash IS NULL"))
+                    .setParameter("hash", hashSessao).getSingleResult();
+            assertEquals(1L, sessoes.longValue(), "Estado persistido da sessão diverge.");
+            assertEquals(1L, vinculos.longValue(), "Estado persistido do vínculo FCM diverge.");
+        });
+    }
+
+    private static class FalhaTransacaoTeste extends RuntimeException { }
+
+    /** Duas conexões reais: primeira mantém o lock da conta até a segunda iniciar sua operação. */
+    private void operacoesOrdenadasComBloqueio(Long conta, Callable<Boolean> primeira,
+                                              Callable<Boolean> segunda) throws Exception {
+        var executor = Executors.newSingleThreadExecutor();
+        var iniciou = new CountDownLatch(1);
+        var tarefa = new java.util.concurrent.atomic.AtomicReference<java.util.concurrent.Future<Boolean>>();
+        var conexaoSegunda = new java.util.concurrent.atomic.AtomicLong();
+        var conexaoPrimeira = new java.util.concurrent.atomic.AtomicLong();
+        try {
+            var transacao = new TransactionTemplate(contexto.getBean(JpaTransactionManager.class));
+            transacao.setTimeout(20);
+            transacao.executeWithoutResult(status -> {
+                var em = org.springframework.orm.jpa.EntityManagerFactoryUtils.getTransactionalEntityManager(
+                        contexto.getBean(EntityManagerFactory.class));
+                conexaoPrimeira.set(((Number) em.createNativeQuery("SELECT CONNECTION_ID()", Long.class).getSingleResult()).longValue());
+                usuarios.bloquearParaCriarAlerta(conta).orElseThrow();
+                try {
+                    assertTrue(primeira.call());
+                    tarefa.set(executor.submit(() -> {
+                        var outraTransacao = new TransactionTemplate(contexto.getBean(JpaTransactionManager.class));
+                        outraTransacao.setTimeout(20);
+                        return outraTransacao.execute(outroStatus -> {
+                            var outroEm = org.springframework.orm.jpa.EntityManagerFactoryUtils.getTransactionalEntityManager(
+                                    contexto.getBean(EntityManagerFactory.class));
+                            conexaoSegunda.set(((Number) outroEm.createNativeQuery("SELECT CONNECTION_ID()", Long.class).getSingleResult()).longValue());
+                            iniciou.countDown();
+                            try { return segunda.call(); }
+                            catch (RuntimeException e) { throw e; }
+                            catch (Exception e) { throw new IllegalStateException("Falha na segunda operação de teste.", e); }
+                        });
+                    }));
+                    assertTrue(iniciou.await(10, TimeUnit.SECONDS), "Segunda transação não iniciou.");
+                    assertNotEquals(conexaoPrimeira.get(), conexaoSegunda.get(), "Exige conexões distintas.");
+                    assertThrows(java.util.concurrent.TimeoutException.class,
+                            () -> tarefa.get().get(250, TimeUnit.MILLISECONDS), "Segunda operação deve aguardar o lock.");
+                } catch (RuntimeException | Error e) { throw e; }
+                catch (Exception e) { throw new IllegalStateException("Falha na coordenação do teste.", e); }
+            });
+            assertTrue(tarefa.get().get(30, TimeUnit.SECONDS));
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(30, TimeUnit.SECONDS), "Transação concorrente não terminou.");
+        }
+    }
+
     private Long criarConta() {
         var conta = new Usuario("Teste concorrência", "concorrencia-" + UUID.randomUUID() + "@example.test",
                 new BCryptPasswordEncoder().encode(UUID.randomUUID().toString()), 0.0, 0.0);
@@ -500,6 +742,28 @@ class SosMysqlIT {
     @EnableJpaRepositories(basePackages = "br.com.guardia.repository")
     @Import(DataSourceTesteConfig.class)
     static class Config {
+        @Bean
+        org.springframework.security.crypto.password.PasswordEncoder passwordEncoderTeste() {
+            return new BCryptPasswordEncoder();
+        }
+
+        @Bean
+        UsuarioService usuarioService(UsuarioRepository usuarios,
+                org.springframework.security.crypto.password.PasswordEncoder encoder, RelogioTeste clock) {
+            return new UsuarioService(usuarios, encoder, clock);
+        }
+
+        @Bean
+        LoginSessaoService loginSessaoService(UsuarioService usuarios, SessaoService sessoes) {
+            return new LoginSessaoService(usuarios, sessoes);
+        }
+
+        @Bean
+        AlterarSenhaService alterarSenhaService(UsuarioRepository usuarios, SessaoRepository sessoes,
+                VinculoFcmRepository vinculos, org.springframework.security.crypto.password.PasswordEncoder encoder,
+                RelogioTeste clock) {
+            return new AlterarSenhaService(usuarios, sessoes, vinculos, encoder, clock);
+        }
         @Bean
         NotificacaoService notificacaoSimulada() { return new NotificacaoSimuladaService(); }
 
