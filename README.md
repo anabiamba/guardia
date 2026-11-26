@@ -135,5 +135,9 @@ Não versionar tokens, senhas, contas de serviço, chaves de assinatura, arquivo
 
 Repositório: https://github.com/anabiamba/guardia
 
-Licença de distribuição ainda não definida. A visibilidade pública não concede, por si só, uma licença de reutilização do código. MapLibre/OpenFreeMap/OpenMapTiles/OpenStreetMap mantêm suas licenças e atribuições próprias, preservadas na interface.
+## Direitos autorais e condições de consulta
+
+**© 2026 Ana Beatriz — Todos os direitos reservados.** Material original disponibilizado para consulta e avaliação acadêmica, sem licença geral de reutilização, modificação ou distribuição. Consulte o [aviso de direitos autorais](LICENSE.md).
+
+Permanecem válidas as permissões previstas na legislação aplicável e nos termos do GitHub, inclusive visualização e forks na plataforma. Este projeto não é apresentado como código aberto de livre reutilização. Componentes de terceiros mantêm suas licenças e atribuições próprias.
 
